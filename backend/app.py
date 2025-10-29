@@ -1,0 +1,1087 @@
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+from pymongo import MongoClient
+
+from bson import ObjectId
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+from functools import wraps
+import jwt
+import datetime
+import json
+import os
+
+# Define a list of valid departments
+VALID_DEPARTMENTS = [
+    'AIDS',
+    'Civil',
+    'CSBS',
+    'CSE',
+    'ECE',
+    'EEE',
+    'IT',
+    'Mech'
+]
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'your-secret-key-change-this-in-production'
+
+# File Upload Configuration
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'doc', 'docx'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+CORS(app)
+
+# Create upload folder if it doesn't exist
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+
+# MongoDB Configuration
+client = MongoClient('mongodb://localhost:27017/')
+db = client['college_management']
+
+# Collections
+users_collection = db['users']
+students_collection = db['students']
+staff_details_collection = db['staff_details']
+ipr_collection = db['ipr']
+
+# Create indexes for better performance
+users_collection.create_index('username', unique=True)
+
+# Drop the obsolete unique index on student_id if it exists
+try:
+    students_collection.drop_index('student_id_1')
+    app.logger.info("Dropped obsolete unique index 'student_id_1' from 'students' collection.")
+except:
+    pass # Index doesn't exist, which is fine.
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# Helper function to convert ObjectId to string
+def serialize_doc(doc):
+    if doc and '_id' in doc:
+        doc['_id'] = str(doc['_id'])
+    return doc
+
+# Authentication decorator
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get('Authorization')
+        
+        if not token:
+            return jsonify({'message': 'Token is missing'}), 401
+        
+        try:
+            if token.startswith('Bearer '):
+                token = token.split(' ')[1]
+            
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=['HS256'])
+            current_user = users_collection.find_one({'username': data['username']})
+            
+            if not current_user:
+                return jsonify({'message': 'User not found'}), 401
+                
+        except jwt.ExpiredSignatureError:
+            return jsonify({'message': 'Token has expired'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'message': 'Invalid token'}), 401
+        
+        return f(current_user, *args, **kwargs)
+    
+    return decorated
+
+# Role-based access decorator
+def admin_required(f):
+    @wraps(f)
+    def decorated(current_user, *args, **kwargs):
+        if current_user.get('role') != 'admin':
+            return jsonify({'message': 'Admin access required'}), 403
+        return f(current_user, *args, **kwargs)
+    return decorated
+
+# Manager/Admin access decorator for staff management
+def manager_or_admin_required(group_type):
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(current_user, *args, **kwargs):
+            if current_user.get('role') == 'admin' or \
+               (current_user.get('role') == 'manager' and current_user.get('management_group') == group_type):
+                return f(current_user, *args, **kwargs)
+            return jsonify({'message': 'Access denied for this management group'}), 403
+        return decorated_function
+    return decorator
+# ============= AUTHENTICATION ROUTES =============
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    # Use silent=True to return None instead of raising an error on invalid JSON
+    app.logger.debug('Incoming request data:')
+    app.logger.debug(request.data)
+
+    data = request.get_json(silent=True)
+
+    # Check if data is a dictionary. If it's None or not a dict, the request is malformed.
+    if not isinstance(data, dict):
+        # Check if any data was received at all.
+        if request.data:
+            return jsonify({'message': 'Request body must be in JSON format with Content-Type: application/json'}), 400
+        else:
+            return jsonify({'message': 'Request body is empty or missing'}), 400
+
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'message': 'Username and password required'}), 400
+    
+    user = users_collection.find_one({'username': username})
+    
+    if not user:
+        return jsonify({'message': 'Invalid credentials'}), 401
+    
+    if not check_password_hash(user['password'], password):
+        return jsonify({'message': 'Invalid credentials'}), 401
+    
+    token = jwt.encode({
+        'username': username,
+        'role': user['role'],
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+    }, app.config['SECRET_KEY'], algorithm='HS256')
+    
+    user_data = {
+        'token': token,
+        'role': user['role'],
+        'username': username,
+        'name': user.get('name', username)
+    }
+    if user.get('role') in ['staff', 'manager']:
+        user_data['management_group'] = user.get('management_group')
+
+    return jsonify(user_data), 200
+
+@app.route('/api/auth/verify', methods=['GET'])
+@token_required
+def verify_token(current_user):
+    user_data = {
+        'username': current_user['username'],
+        'role': current_user['role'],
+        'name': current_user.get('name', current_user['username']),
+        'management_group': current_user.get('management_group') # Will be None for admin
+    }
+    return jsonify(user_data), 200
+
+# ============= ADMIN ROUTES - STAFF MANAGEMENT =============
+
+@app.route('/api/admin/staff', methods=['POST'])
+@token_required
+def create_staff(current_user):
+    data = request.form
+
+    # Updated required fields
+    required_fields = ['username', 'password', 'name', 'department', 'management_group']
+    if not all(field in data for field in required_fields):
+        return jsonify({'message': 'Missing required fields'}), 400
+    
+    # Check if username already exists
+    if users_collection.find_one({'username': data['username']}):
+        return jsonify({'message': 'Username already exists'}), 409
+    
+    management_group = data.get('management_group')
+    if management_group not in ['rd', 'ipr']:
+        return jsonify({'message': 'Invalid management group. Must be "rd" or "ipr".'}), 400
+
+    # Default role to 'staff' if not provided
+    role = data.get('role', 'staff')
+
+    # Security check: Only admin can create managers. Managers can only create staff in their group.
+    if current_user.get('role') == 'manager' and (role != 'staff' or management_group != current_user.get('management_group')):
+        return jsonify({'message': 'Managers can only create staff within their own management group.'}), 403
+    
+    # Ensure only valid roles are assigned
+    if role not in ['staff', 'manager']:
+        return jsonify({'message': 'Invalid role. Must be "staff" or "manager".'}), 400
+
+    staff_user = {
+        'username': data['username'],
+        'password': generate_password_hash(data['password']),
+        'role': role,
+        'name': data['name'],
+        'email': data.get('email', ''), # Keep as optional
+        'phone': data.get('phone', ''), # Keep as optional
+        'department': data.get('department', ''),
+        'management_group': data['management_group'],
+        'created_at': datetime.datetime.utcnow(),
+        'created_by': current_user['username']
+    }
+    
+    result = users_collection.insert_one(staff_user)
+    staff_user['_id'] = str(result.inserted_id)
+    staff_user.pop('password')
+    
+    return jsonify({'message': 'Staff created successfully', 'staff': staff_user}), 201
+
+@app.route('/api/admin/staff', methods=['GET'])
+@token_required
+def get_all_staff(current_user):
+    group = request.args.get('group') # 'rd' or 'ipr'
+    if group not in ['rd', 'ipr']:
+        return jsonify({'message': 'A valid group ("rd" or "ipr") is required.'}), 400
+
+    # Check permissions
+    if current_user.get('role') == 'manager' and current_user.get('management_group') != group:
+        return jsonify({'message': 'Access denied for this management group'}), 403
+
+    # Correctly query for users in the specified group.
+    # This will include staff, managers, and any admins that might be assigned to a group.
+    query = {
+        'management_group': group,
+        'role': {'$in': ['staff', 'manager', 'admin']}
+    }
+    staff_list = list(users_collection.find(query, {'password': 0}))
+    staff_list = [serialize_doc(staff) for staff in staff_list]
+    return jsonify(staff_list), 200
+
+@app.route('/api/admin/staff/<staff_id>', methods=['GET']) # This endpoint is not used by the frontend, but good to secure
+@token_required
+@admin_required # Only admin can get any staff by ID for simplicity
+def get_staff(current_user, staff_id):
+    try:
+        staff = users_collection.find_one({'_id': ObjectId(staff_id), 'role': 'staff'}, {'password': 0})
+        if not staff:
+            return jsonify({'message': 'Staff not found'}), 404
+        return jsonify(serialize_doc(staff)), 200
+    except:
+        return jsonify({'message': 'Invalid staff ID'}), 400
+
+@app.route('/api/admin/staff/<staff_id>', methods=['PUT'])
+@token_required
+def update_staff(current_user, staff_id):
+    data = request.get_json()
+    if not data:
+        return jsonify({'message': 'Request body is missing'}), 400
+
+    try:
+        target_user = users_collection.find_one({'_id': ObjectId(staff_id)})
+        if not target_user:
+            return jsonify({'message': 'User not found'}), 404
+
+        # Security Check
+        if current_user.get('role') == 'manager' and current_user.get('management_group') != target_user.get('management_group'):
+            return jsonify({'message': 'Access denied to modify this user'}), 403
+
+
+        update_data = {}
+        allowed_fields = ['name', 'email', 'phone', 'department', 'management_group']
+        
+        for field in allowed_fields:
+            if field in data:
+                update_data[field] = data[field]
+        
+        # Handle password update separately
+        if 'password' in data and data['password']:
+            update_data['password'] = generate_password_hash(data['password'])
+        
+        if not update_data:
+            return jsonify({'message': 'No fields to update'}), 400
+        
+        update_data['updated_at'] = datetime.datetime.utcnow()
+        
+        result = users_collection.update_one(
+            {'_id': ObjectId(staff_id)},
+            {'$set': update_data}
+        )
+        
+        if result.matched_count == 0:
+            return jsonify({'message': 'Staff not found'}), 404
+        
+        return jsonify({'message': 'Staff updated successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid staff ID'}), 400
+
+@app.route('/api/admin/staff/<staff_id>', methods=['DELETE'])
+@token_required
+def delete_staff(current_user, staff_id):
+    try:
+        target_user = users_collection.find_one({'_id': ObjectId(staff_id)})
+        if not target_user:
+            return jsonify({'message': 'User not found'}), 404
+
+        # Security Check
+        if current_user.get('role') == 'manager' and current_user.get('management_group') != target_user.get('management_group'):
+            return jsonify({'message': 'Access denied to delete this user'}), 403
+
+        result = users_collection.delete_one({'_id': ObjectId(staff_id)})
+        
+        if result.deleted_count == 0:
+            return jsonify({'message': 'Staff not found'}), 404
+        
+        return jsonify({'message': 'Staff deleted successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid staff ID'}), 400
+
+# ============= STUDENT ROUTES (CRUD) =============
+
+@app.route('/api/students', methods=['POST'])
+@token_required
+def create_student(current_user):
+    # Support both form-data (request.form + request.files) and JSON (application/json)
+    # Merge JSON body into form values (JSON wins when keys overlap)
+    form_data = {k: v for k, v in request.form.items()}
+    json_data = request.get_json(silent=True)
+    data = form_data.copy()
+    if isinstance(json_data, dict):
+        data.update(json_data)
+
+    app.logger.debug('create_student incoming data: %s', data)
+
+    # Required fields for achievements
+    required_fields = ['name', 'department', 'year', 'event_name', 'event_type', 'college_name', 'dates', 'status']
+    missing = [f for f in required_fields if not data.get(f)]
+    if missing:
+        return jsonify({'message': 'Missing required fields', 'missing': missing}), 400
+
+    # Note: student_id is no longer a unique identifier for this data model
+
+    # Enforce department for staff: if current_user is staff, override provided department
+    student_department = data.get('department', '')
+    if current_user.get('role') == 'staff':
+        # If staff, ensure they can only create entries for their department
+        student_department = current_user.get('department', '')
+
+    if student_department not in VALID_DEPARTMENTS:
+        return jsonify({'message': 'Invalid department', 'valid_departments': VALID_DEPARTMENTS}), 400
+
+    file_path = None
+    if 'file' in request.files:
+        file = request.files['file']
+        if file and file.filename != '' and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            unique_filename = f"{datetime.datetime.utcnow().timestamp()}_{filename}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            file.save(file_path)
+            file_path = os.path.join('uploads', unique_filename)
+
+    # Parse dates from JSON string
+    dates_list = []
+    if 'dates' in data:
+        try:
+            dates_list = json.loads(data['dates'])
+        except (json.JSONDecodeError, TypeError):
+            return jsonify({'message': 'Invalid format for dates. Expected a JSON array string.'}), 400
+
+    student = {
+        'name': data.get('name', ''),
+        'department': student_department,
+        'year': data.get('year', ''),
+        'section': data.get('section', ''),
+        # Achievement-specific fields
+        'event_name': data.get('event_name', ''),
+        'event_type': data.get('event_type', ''),
+        'college_name': data.get('college_name', ''),
+        'dates': dates_list,
+        'status': data.get('status', ''),
+        'notes': data.get('notes', ''),
+        'prize_details': data.get('prize_details', ''),
+        'file_attachment': file_path,
+        'created_at': datetime.datetime.utcnow(),
+        'created_by': current_user['username']
+    }
+
+    result = students_collection.insert_one(student)
+    student['_id'] = str(result.inserted_id)
+
+    return jsonify({'message': 'Student created successfully', 'student': student}), 201
+
+@app.route('/api/students', methods=['GET'])
+@token_required
+
+def get_all_students(current_user):
+    # Get query parameters for filtering
+    department = request.args.get('department')
+    year = request.args.get('year')
+    search = request.args.get('search')
+    event_name = request.args.get('event_name')
+    status = request.args.get('status')
+    
+    query = {}
+    # Staff can only see their department
+    if current_user['role'] == 'staff':
+        # Staff users can only access students in their department
+        query['department'] = current_user.get('department')
+
+    if department:
+        query['department'] = department
+    if year:
+        query['year'] = year
+    if status:
+        query['status'] = status
+    if event_name:
+        query['event_name'] = event_name
+    if search:
+        query['$or'] = [
+            {'name': {'$regex': search, '$options': 'i'}},
+            {'student_id': {'$regex': search, '$options': 'i'}},
+            {'email': {'$regex': search, '$options': 'i'}}
+        ]
+    
+    students = list(students_collection.find(query))
+    students = [serialize_doc(student) for student in students]
+    return jsonify(students), 200
+
+
+@app.route('/api/students/<student_id>', methods=['GET'])
+@token_required
+def get_student(current_user, student_id):
+    try:
+        student = students_collection.find_one({'_id': ObjectId(student_id)})
+        
+        # Staff can only access students in their department
+        if current_user['role'] == 'staff' and student and student.get('department') != current_user.get('department'):
+            return jsonify({'message': 'Access denied to this student'}), 403
+
+        if not student:
+
+            return jsonify({'message': 'Student not found'}), 404
+        return jsonify(serialize_doc(student)), 200
+    except:
+        return jsonify({'message': 'Invalid student ID'}), 400
+
+@app.route('/api/students/<student_id>', methods=['PUT'])
+@token_required
+def update_student(current_user, student_id):
+    data = request.form
+    
+    try:
+        # First, verify the staff has access to this student
+        if current_user['role'] == 'staff':
+            student = students_collection.find_one({'_id': ObjectId(student_id)})
+
+            if not student:
+                return jsonify({'message': 'Student not found'}), 404
+            if student.get('department') != current_user.get('department'):
+                return jsonify({'message': 'Access denied to this student'}), 403
+
+        # Filter for allowed fields to prevent unwanted updates
+        allowed_fields = [
+            'name', 'year', 'department', 'section', 'event_name',
+            'event_type', 'college_name', 'status', 'notes', 'prize_details'
+        ]
+        update_data = {}
+        for field in allowed_fields:
+            if field in data:
+                update_data[field] = data[field]
+
+        # Handle dates update
+        if 'dates' in data:
+            try:
+                # The frontend sends a JSON string for dates
+                update_data['dates'] = json.loads(data['dates'])
+            except (json.JSONDecodeError, TypeError):
+                return jsonify({'message': 'Invalid format for dates. Expected a JSON array string.'}), 400
+
+        # Handle file update
+
+        if 'file' in request.files:
+            file = request.files['file']
+            if file and file.filename != '' and allowed_file(file.filename):
+                # Optional: Delete old file if it exists
+                if student and student.get('file_attachment'):
+                    old_file_path = os.path.join(app.config['UPLOAD_FOLDER'], os.path.basename(student['file_attachment']))
+                    if os.path.exists(old_file_path):
+                        os.remove(old_file_path)
+                
+                filename = secure_filename(file.filename)
+                unique_filename = f"{datetime.datetime.utcnow().timestamp()}_{filename}"
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                file.save(file_path)
+                update_data['file_attachment'] = os.path.join('uploads', unique_filename)
+        
+        if not update_data:
+            return jsonify({'message': 'No fields to update'}), 400
+        
+        update_data['updated_at'] = datetime.datetime.utcnow()
+
+        update_data['updated_by'] = current_user['username']
+        
+        result = students_collection.update_one(
+            {'_id': ObjectId(student_id)},
+            {'$set': update_data}
+        )
+        
+        if result.matched_count == 0:
+            return jsonify({'message': 'Student not found'}), 404
+
+        return jsonify({'message': 'Student updated successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid student ID'}), 400
+
+@app.route('/api/students/<student_id>', methods=['DELETE'])
+
+@token_required
+def delete_student(current_user, student_id):
+    try:
+        # First, verify the staff has access to this student
+        if current_user['role'] == 'staff':
+            student = students_collection.find_one({'_id': ObjectId(student_id)})
+            if not student:
+
+                return jsonify({'message': 'Student not found'}), 404
+            if student.get('department') != current_user.get('department'):
+                return jsonify({'message': 'Access denied to this student'}), 403
+
+
+
+        result = students_collection.delete_one({'_id': ObjectId(student_id)})
+        
+        if result.deleted_count == 0:
+            return jsonify({'message': 'Student not found'}), 404
+        
+        return jsonify({'message': 'Student deleted successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid student ID'}), 400
+
+# ============= STAFF DETAILS ROUTES =============
+
+@app.route('/api/staff-details', methods=['POST'])
+@token_required
+def create_staff_details(current_user):
+    # Access Control: Only admin or R&D staff can create R&D details
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'rd':
+        return jsonify({'message': 'Access Denied: This function is for R&D staff only.'}), 403
+
+    if 'title' not in request.form or 'category' not in request.form:
+        return jsonify({'message': 'Missing required fields'}), 400
+    
+    data = request.form
+    
+    # Handle proofs checkboxes
+    proofs = {
+        'certificate_of_presentation': 'certificate_of_presentation' in data,
+        'abstract_copy': 'abstract_copy' in data,
+        'conference_brochure': 'conference_brochure' in data,
+        'acceptance_mail': 'acceptance_mail' in data,
+        'indexing_info': 'indexing_info' in data,
+        # Journal proofs
+        'journal_published_copy': 'journal_published_copy' in data,
+        'journal_acceptance_letter': 'journal_acceptance_letter' in data,
+        'journal_submission_proof': 'journal_submission_proof' in data,
+        'journal_front_page': 'journal_front_page' in data,
+        'journal_indexing_proof': 'journal_indexing_proof' in data,
+        # Book proofs
+        'book_front_cover': 'book_front_cover' in data,
+        'book_isbn_page': 'book_isbn_page' in data,
+        'book_publisher_page': 'book_publisher_page' in data,
+        'book_copyright_page': 'book_copyright_page' in data,
+        'book_author_contribution': 'book_author_contribution' in data,
+        # Book Chapter proofs
+        'chapter_content': 'chapter_content' in data,
+        'chapter_book_title_page': 'chapter_book_title_page' in data,
+        'chapter_isbn_page': 'chapter_isbn_page' in data,
+        'chapter_publisher_details': 'chapter_publisher_details' in data,
+        'chapter_contribution_proof': 'chapter_contribution_proof' in data,
+        # Consultancy proofs
+        'consultancy_work_order': 'consultancy_work_order' in data,
+        'consultancy_invoice_receipt': 'consultancy_invoice_receipt' in data,
+        'consultancy_acknowledgement': 'consultancy_acknowledgement' in data,
+        'consultancy_screenshots': 'consultancy_screenshots' in data,
+        # Award proofs
+        'award_certificate': 'award_certificate' in data,
+        'award_recognition_letter': 'award_recognition_letter' in data,
+        'award_event_photo': 'award_event_photo' in data,
+        'award_media_clipping': 'award_media_clipping' in data,
+    }
+    file_path = None
+    if 'file' in request.files:
+        file = request.files['file']
+        if file and file.filename != '' and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            unique_filename = f"{datetime.datetime.utcnow().timestamp()}_{filename}"
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+            file.save(file_path)
+            file_path = os.path.join('uploads', unique_filename)
+
+    # Dynamically build the detail object from form fields, excluding proofs
+    staff_detail = {key: value for key, value in data.items() if not key.startswith('proofs[') and key != 's_no'}
+
+    # Add metadata
+    staff_detail.update({
+        'created_at': datetime.datetime.utcnow(),
+        'created_by': current_user['username'],
+        'proofs': proofs,
+        'file_attachment': file_path
+    })
+
+    # Ensure required fields are present
+    if not staff_detail.get('title') or not staff_detail.get('category'):
+        return jsonify({'message': 'Title and Category are required'}), 400
+    
+    result = staff_details_collection.insert_one(staff_detail)
+    staff_detail['_id'] = str(result.inserted_id)
+    
+    return jsonify({'message': 'Staff details created successfully', 'details': staff_detail}), 201
+
+@app.route('/api/staff-details', methods=['GET'])
+@token_required
+def get_all_staff_details(current_user):
+    # Access Control: Only admin or R&D staff can view R&D details
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'rd':
+        return jsonify({'message': 'Access Denied: You do not have permission to view R&D data.'}), 403
+
+    category = request.args.get('category')
+    department = request.args.get('department')
+    search_term = request.args.get('search')
+    
+    query = {}
+    if category:
+        query['category'] = category
+    if department:
+        query['department'] = department
+    
+    if search_term:
+        search_regex = {'$regex': search_term, '$options': 'i'}
+        query['$or'] = [
+            {'title': search_regex},
+            {'paper_title': search_regex},
+            {'book_title': search_regex},
+            {'authors': search_regex},
+            {'journal_name': search_regex},
+            {'conference_name': search_regex},
+        ]
+
+    # Access control: Faculty see their own entries, Managers see their group's, Admin sees all.
+    if current_user.get('role') == 'staff':
+        query['created_by'] = current_user['username']
+    
+    details = list(staff_details_collection.find(query).sort('created_at', -1))
+    details = [serialize_doc(detail) for detail in details]
+    return jsonify(details), 200
+
+@app.route('/api/staff-details/<detail_id>', methods=['GET'])
+@token_required
+def get_staff_detail(current_user, detail_id):
+    # Access Control: Only admin or R&D staff can view R&D details
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'rd':
+        return jsonify({'message': 'Access Denied: You do not have permission to view this data.'}), 403
+
+    try:
+        detail = staff_details_collection.find_one({'_id': ObjectId(detail_id)})
+        if not detail:
+            return jsonify({'message': 'Staff details not found'}), 404
+        return jsonify(serialize_doc(detail)), 200
+    except:
+        return jsonify({'message': 'Invalid detail ID'}), 400
+
+@app.route('/api/staff-details/<detail_id>', methods=['PUT'])
+@token_required
+def update_staff_details(current_user, detail_id):
+    # Access Control: Only admin or R&D staff can modify R&D details
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'rd':
+        return jsonify({'message': 'Access Denied: You do not have permission to modify this data.'}), 403
+
+    try:
+        data = request.form
+        
+        # Handle proofs checkboxes
+        proofs = {
+            'certificate_of_presentation': 'certificate_of_presentation' in data,
+            'abstract_copy': 'abstract_copy' in data,
+            'conference_brochure': 'conference_brochure' in data,
+            'acceptance_mail': 'acceptance_mail' in data,
+            'indexing_info': 'indexing_info' in data,
+            # Journal proofs
+            'journal_published_copy': 'journal_published_copy' in data,
+            'journal_acceptance_letter': 'journal_acceptance_letter' in data,
+            'journal_submission_proof': 'journal_submission_proof' in data,
+            'journal_front_page': 'journal_front_page' in data,
+            'journal_indexing_proof': 'journal_indexing_proof' in data,
+            # Book proofs
+            'book_front_cover': 'book_front_cover' in data,
+            'book_isbn_page': 'book_isbn_page' in data,
+            'book_publisher_page': 'book_publisher_page' in data,
+            'book_copyright_page': 'book_copyright_page' in data,
+            'book_author_contribution': 'book_author_contribution' in data,
+            # Book Chapter proofs
+            'chapter_content': 'chapter_content' in data,
+            'chapter_book_title_page': 'chapter_book_title_page' in data,
+            'chapter_isbn_page': 'chapter_isbn_page' in data,
+            'chapter_publisher_details': 'chapter_publisher_details' in data,
+            'chapter_contribution_proof': 'chapter_contribution_proof' in data,
+            # Consultancy proofs
+            'consultancy_work_order': 'consultancy_work_order' in data,
+            'consultancy_invoice_receipt': 'consultancy_invoice_receipt' in data,
+            'consultancy_acknowledgement': 'consultancy_acknowledgement' in data,
+            'consultancy_screenshots': 'consultancy_screenshots' in data,
+            # Award proofs
+            'award_certificate': 'award_certificate' in data,
+            'award_recognition_letter': 'award_recognition_letter' in data,
+            'award_event_photo': 'award_event_photo' in data,
+            'award_media_clipping': 'award_media_clipping' in data,
+        }
+        
+        update_data = {k: v for k, v in data.items() if k not in ['_id', 'file'] and not k.startswith('proofs[')}
+
+        # Handle file update
+        if 'file' in request.files:
+            file = request.files['file']
+            if file and file.filename != '' and allowed_file(file.filename):
+                # Optional: Delete old file if it exists
+                existing_detail = staff_details_collection.find_one({'_id': ObjectId(detail_id)})
+                if existing_detail and existing_detail.get('file_attachment'):
+                    old_file_path = os.path.join(app.config['UPLOAD_FOLDER'], os.path.basename(existing_detail['file_attachment']))
+                    if os.path.exists(old_file_path):
+                        os.remove(old_file_path)
+                
+                filename = secure_filename(file.filename)
+                unique_filename = f"{datetime.datetime.utcnow().timestamp()}_{filename}"
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                file.save(file_path)
+                update_data['file_attachment'] = os.path.join('uploads', unique_filename)
+        
+        if not update_data:
+            return jsonify({'message': 'No fields to update'}), 400
+        
+        update_data['updated_at'] = datetime.datetime.utcnow()
+        update_data['proofs'] = proofs
+        update_data['updated_by'] = current_user['username']
+        
+        result = staff_details_collection.update_one(
+            {'_id': ObjectId(detail_id)},
+            {'$set': update_data}
+        )
+        
+        if result.matched_count == 0:
+            return jsonify({'message': 'Staff details not found'}), 404
+        
+        return jsonify({'message': 'Staff details updated successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid detail ID'}), 400
+
+@app.route('/api/staff-details/<detail_id>', methods=['DELETE'])
+@token_required
+def delete_staff_details(current_user, detail_id):
+    # Access Control: Only admin or R&D staff can delete R&D details
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'rd':
+        return jsonify({'message': 'Access Denied: You do not have permission to delete this data.'}), 403
+
+    try:
+        result = staff_details_collection.delete_one({'_id': ObjectId(detail_id)})
+        
+        if result.deleted_count == 0:
+            return jsonify({'message': 'Staff details not found'}), 404
+        
+        return jsonify({'message': 'Staff details deleted successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid detail ID'}), 400
+
+# ============= IPR ROUTES =============
+
+@app.route('/api/ipr', methods=['POST'])
+@token_required
+def create_ipr(current_user):
+    # Access Control: Only admin or IPR staff can create IPR data
+    import json
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'ipr':
+        return jsonify({'message': 'Access Denied: This function is for IPR staff only.'}), 403
+
+    if 'title' not in request.form or 'application_type' not in request.form:
+        return jsonify({'message': 'Missing required fields'}), 400
+    
+    data = request.form
+    
+    # Helper to save a file and return its path
+    def save_file(file_key):
+        if file_key in request.files:
+            file = request.files[file_key]
+            if file and file.filename != '' and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                unique_filename = f"{datetime.datetime.utcnow().timestamp()}_{file_key}_{filename}"
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                file.save(file_path)
+                return os.path.join('uploads', unique_filename)
+        return None
+
+    # Process each file
+    file_paths = {key: save_file(key) for key in ['file_receipt', 'file_published_proof', 'file_pattern_journal', 'file_certificate']}
+    
+    # Parse inventors and applicants from JSON string
+    inventors_list = []
+    if 'inventors' in data:
+        try:
+            inventors_list = json.loads(data['inventors'])
+        except json.JSONDecodeError:
+            return jsonify({'message': 'Invalid format for inventors'}), 400
+    
+    applicants_list = []
+    if 'applicants' in data:
+        try:
+            applicants_list = json.loads(data['applicants'])
+        except json.JSONDecodeError:
+            return jsonify({'message': 'Invalid format for applicants'}), 400
+
+    # Use .get() for optional fields to avoid errors if they are not in the form
+    ipr_entry = {
+        'application_number': data.get('application_number'),
+        'application_type': data.get('application_type'),
+        'applicants': applicants_list,
+        'inventors': inventors_list,
+        'title': data.get('title'),
+        'department': data.get('department'),
+        'status': data.get('status'),
+        'filed_date': data.get('filed_date'),
+        'published_date': data.get('published_date'),
+        'grant_date': data.get('grant_date'),
+    }
+    ipr_entry.update({
+        'created_at': datetime.datetime.utcnow(),
+        'created_by': current_user['username'],
+        'file_receipt': file_paths.get('file_receipt'),
+        'file_published_proof': file_paths.get('file_published_proof'),
+        'file_pattern_journal': file_paths.get('file_pattern_journal'),
+        'file_certificate': file_paths.get('file_certificate'),
+    })
+
+    result = ipr_collection.insert_one(ipr_entry)
+    ipr_entry['_id'] = str(result.inserted_id)
+    
+    return jsonify({'message': 'IPR created successfully', 'ipr': ipr_entry}), 201
+
+@app.route('/api/ipr', methods=['GET'])
+@token_required
+def get_all_ipr(current_user):
+    # Access Control: Only admin or IPR staff can view IPR data
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'ipr':
+        return jsonify({'message': 'Access Denied: You do not have permission to view IPR data.'}), 403
+
+    search_term = request.args.get('search')
+    app_type = request.args.get('application_type')
+    status = request.args.get('status')
+
+    query = {}
+    if current_user.get('role') == 'staff':
+        query['created_by'] = current_user['username']
+    
+    if app_type:
+        query['application_type'] = app_type
+    
+    if status:
+        query['status'] = status
+
+    if search_term:
+        search_regex = {'$regex': search_term, '$options': 'i'}
+        query['$or'] = [
+            {'title': search_regex},
+            {'application_number': search_regex},
+            {'applicants.name': search_regex},
+            {'inventors.name': search_regex}
+        ]
+
+    ipr_list = list(ipr_collection.find(query).sort('created_at', -1))
+    ipr_list = [serialize_doc(ipr) for ipr in ipr_list]
+    return jsonify(ipr_list), 200
+
+@app.route('/api/ipr/<ipr_id>', methods=['PUT'])
+@token_required
+def update_ipr(current_user, ipr_id):
+    # Access Control: Only admin or IPR staff can modify IPR data
+    import json
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'ipr':
+        return jsonify({'message': 'Access Denied: You do not have permission to modify this data.'}), 403
+
+    try:
+        data = request.form # Use request.form directly
+
+        # Helper to save a file and return its path
+        def save_file(file_key):
+            if file_key in request.files:
+                file = request.files[file_key]
+                if file and file.filename != '' and allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    unique_filename = f"{datetime.datetime.utcnow().timestamp()}_{file_key}_{filename}"
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+                    file.save(file_path)
+                    return os.path.join('uploads', unique_filename)
+            return None
+
+        # Parse inventors and applicants from JSON string
+        inventors_list = []
+        if 'inventors' in data:
+            try:
+                inventors_list = json.loads(data['inventors'])
+            except json.JSONDecodeError:
+                return jsonify({'message': 'Invalid format for inventors'}), 400
+        
+        applicants_list = []
+        if 'applicants' in data:
+            try:
+                applicants_list = json.loads(data['applicants'])
+            except json.JSONDecodeError:
+                return jsonify({'message': 'Invalid format for applicants'}), 400
+
+        update_data = {
+            'application_number': data.get('application_number'),
+            'application_type': data.get('application_type'),
+            'applicants': applicants_list,
+            'inventors': inventors_list,
+            'title': data.get('title'),
+            'department': data.get('department'),
+            'status': data.get('status'),
+            'filed_date': data.get('filed_date'),
+            'published_date': data.get('published_date'),
+            'grant_date': data.get('grant_date'),
+        }
+
+        # Process each file if it exists in the request
+        file_keys = ['file_receipt', 'file_published_proof', 'file_pattern_journal', 'file_certificate']
+        for key in file_keys:
+            file_path = save_file(key)
+            if file_path:
+                update_data[key] = file_path
+        
+        update_data['updated_at'] = datetime.datetime.utcnow()
+        update_data['updated_by'] = current_user['username']
+        
+        result = ipr_collection.update_one({'_id': ObjectId(ipr_id)}, {'$set': update_data})
+        if result.matched_count == 0:
+            return jsonify({'message': 'IPR not found'}), 404
+        
+        return jsonify({'message': 'IPR updated successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid IPR ID'}), 400
+
+@app.route('/api/ipr/<ipr_id>', methods=['DELETE'])
+@token_required
+def delete_ipr(current_user, ipr_id):
+    # Access Control: Only admin or IPR staff can delete IPR data
+    if current_user.get('role') == 'staff' and current_user.get('management_group') != 'ipr':
+        return jsonify({'message': 'Access Denied: You do not have permission to delete this data.'}), 403
+
+    try:
+        result = ipr_collection.delete_one({'_id': ObjectId(ipr_id)})
+        if result.deleted_count == 0:
+            return jsonify({'message': 'IPR not found'}), 404
+        return jsonify({'message': 'IPR deleted successfully'}), 200
+    except:
+        return jsonify({'message': 'Invalid IPR ID'}), 400
+
+# ============= DASHBOARD/STATS ROUTES =============
+@app.route('/api/files/<path:filename>')
+@token_required
+def serve_file(current_user, filename):
+    """Serves a file from the upload directory."""
+    # Basic security: prevent directory traversal.
+    if '..' in filename or filename.startswith('/'):
+        return jsonify({'message': 'Invalid filename'}), 400
+    
+    # The filename from the frontend might include the 'uploads/' path.
+    # We only want the actual filename for security and correctness.
+    secure_name = os.path.basename(filename)
+
+    try:
+        return send_from_directory(
+            app.config['UPLOAD_FOLDER'],
+            secure_name,
+            as_attachment=True
+        )
+    except FileNotFoundError:
+        return jsonify({'message': 'File not found'}), 404
+
+@app.route('/api/dashboard/stats', methods=['GET'])
+@token_required
+def get_dashboard_stats(current_user):
+    role = current_user.get('role')
+    management_group = current_user.get('management_group')
+    stats = {}
+
+    if role == 'admin':
+        stats['total_students'] = students_collection.count_documents({})
+        stats['total_rd_entries'] = staff_details_collection.count_documents({})
+        stats['total_ipr_entries'] = ipr_collection.count_documents({})
+        stats['total_staff'] = users_collection.count_documents({'role': 'staff'})
+        
+        # Students by department
+        pipeline = [
+            {'$group': {'_id': '$department', 'count': {'$sum': 1}}}
+        ]
+        dept_stats = list(students_collection.aggregate(pipeline))
+        stats['students_by_department'] = {item['_id']: item['count'] for item in dept_stats}
+
+    elif role == 'staff' and management_group == 'rd':
+        # R&D staff stats
+        rd_query = {'created_by': current_user['username']}
+        stats['my_rd_entries'] = staff_details_collection.count_documents(rd_query)
+        
+        student_query = {}
+        if current_user.get('department'):
+            student_query['department'] = current_user.get('department')
+        stats['department_students'] = students_collection.count_documents(student_query)
+
+    elif role == 'staff' and management_group == 'ipr':
+        # IPR staff stats
+        ipr_query = {'created_by': current_user['username']}
+        stats['my_ipr_entries'] = ipr_collection.count_documents(ipr_query)
+
+    return jsonify(stats), 200
+
+# ============= INITIALIZATION ROUTE =============
+
+@app.route('/api/init-admin', methods=['POST'])
+def init_admin():
+    """Initialize the admin account (use only once during setup)"""
+    data = request.get_json()
+    
+    # Check if admin already exists
+    if users_collection.find_one({'role': 'admin'}):
+        return jsonify({'message': 'Admin already exists'}), 409
+    
+    admin_username = data.get('username', 'admin')
+    admin_password = data.get('password', 'admin123')
+    
+    admin_user = {
+        'username': admin_username,
+        'password': generate_password_hash(admin_password),
+        'role': 'admin',
+        'name': 'System Administrator',
+        'email': data.get('email', 'admin@college.edu'),
+        'created_at': datetime.datetime.utcnow()
+    }
+    
+    users_collection.insert_one(admin_user)
+    
+    return jsonify({'message': 'Admin account created successfully'}), 201
+
+# ============= ERROR HANDLERS =============
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'message': 'Resource not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'message': 'Internal server error'}), 500
+
+# ============= RUN APPLICATION =============
+
+def create_default_admin_on_startup():
+    """Checks if an admin user exists and creates one if not."""
+    if not users_collection.find_one({'role': 'admin'}):
+        print("No admin user found. Creating default admin...")
+        admin_user = {
+            'username': 'admin',
+            'password': generate_password_hash('admin123'),
+            'role': 'admin',
+            'name': 'System Administrator',
+            'email': 'admin@college.edu',
+            'created_at': datetime.datetime.utcnow()
+        }
+        users_collection.insert_one(admin_user)
+        print("Default admin created. Username: 'admin', Password: 'admin123'")
+
+if __name__ == '__main__':
+    # Create a default admin user on startup if one doesn't exist
+    create_default_admin_on_startup()
+    
+
+    app.run(debug=True, host='0.0.0.0', port=5000)

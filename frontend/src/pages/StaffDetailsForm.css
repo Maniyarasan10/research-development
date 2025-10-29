@@ -1,0 +1,296 @@
+/* StaffDetailsForm.css */
+.staff-details-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.staff-details-form .form-error {
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 0.75rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  border: 1px solid #fecaca;
+}
+
+.staff-details-form .form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+}
+.staff-details-form .form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem 1rem;
+}
+
+.staff-details-form .form-grid .form-group.span-2 {
+  grid-column: span 2;
+}
+
+.staff-details-form .form-grid .form-group.span-3 {
+  grid-column: span 3;
+}
+
+.staff-details-form .file-upload-group {
+  grid-column: span 3;
+}
+
+.staff-details-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.staff-details-form .form-group label {
+  color: #374151;
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.staff-details-form .form-group input,
+.staff-details-form .form-group select,
+.staff-details-form .form-group textarea {
+  padding: 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.staff-details-form .form-group input:focus,
+.staff-details-form .form-group select:focus,
+.staff-details-form .form-group textarea:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.staff-details-form .form-group textarea {
+  resize: vertical;
+  min-height: 150px;
+}
+
+.staff-details-form .form-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.staff-details-form .btn-secondary,
+.staff-details-form .btn-submit {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.staff-details-form .btn-secondary {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.staff-details-form .btn-secondary:hover {
+  background: #e5e7eb;
+}
+
+.staff-details-form .btn-submit {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.staff-details-form .btn-submit:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(102, 126, 234, 0.3);
+}
+
+.staff-details-form .btn-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .staff-details-form .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.proof-notice {
+  background-color: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 1rem;
+  font-size: 0.875rem;
+  color: #4b5563;
+}
+
+.proof-notice p {
+  margin-top: 0;
+}
+
+.proof-notice ul {
+  padding-left: 1.25rem;
+  margin-bottom: 0;
+}
+
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.select-all-label {
+  font-weight: 600;
+  color: #1f2937;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid #e5e7eb;
+  margin-bottom: 0.25rem;
+}
+
+/* Styles for IPRForm inventor fields */
+.inventor-field-group {
+  display: flex;
+  align-items: center;
+  gap: 0; /* Remove default gap between elements in this flex container */
+  margin-bottom: 0.5rem; /* Space between each inventor row */
+}
+
+.inventor-field-group:last-of-type {
+  margin-bottom: 0; /* No margin after the last inventor row */
+}
+
+.inventor-field-group .inventor-title {
+  width: 70px; /* Fixed width for the title dropdown */
+  flex-shrink: 0; /* Prevent it from shrinking */
+  border-radius: 0; /* Remove radius */
+  border-right: none;
+}
+
+.inventor-field-group input[name="name"] {
+  flex-grow: 1; /* Allow name input to take remaining space */
+  border-radius: 0; /* No radius for middle element */
+}
+
+.inventor-field-group select[name="department"] {
+  border-radius: 0 8px 8px 0; /* Round right corners */
+}
+
+/* Specific rule for the single applicant input field */
+.inventor-field-group input[name="name"]:only-child {
+  border-radius: 8px;
+}
+
+
+
+
+
+
+
+.btn-add,
+.btn-remove {
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.btn-add {
+  background-color: #eef2ff;
+  color: #4338ca;
+  padding: 0.6rem 1rem;
+  font-size: 0.875rem;
+  margin-top: 0.25rem;
+  align-self: flex-start;
+}
+
+.btn-add:hover {
+  background-color: #e0e7ff;
+}
+
+.btn-remove {
+  background-color: #fee2e2;
+  color: #b91c1c;
+  width: 38px;
+  height: 38px;
+  font-size: 1.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 4px; /* Adjust for vertical alignment of '-' */
+}
+
+.inventor-field-group .btn-remove {
+  margin-left: 0.5rem; /* Space for the remove button */
+  flex-shrink: 0;
+}
+
+.btn-remove:hover {
+  background-color: #fecaca;
+}
+
+/* Styles for file input */
+.staff-details-form .form-group input[type="file"] {
+  padding: 0;
+  background-color: white;
+  color: #4b5563;
+  font-size: 0.9rem;
+}
+
+.staff-details-form .form-group input[type="file"]::file-selector-button {
+  background: #f3f4f6;
+  color: #374151;
+  border: none;
+  border-right: 1px solid #d1d5db;
+  padding: 0.75rem 1rem;
+  margin-right: 1rem;
+  cursor: pointer;
+  font-weight: 500;
+  font-family: inherit;
+  transition: background-color 0.2s ease;
+}
+
+.staff-details-form .form-group input[type="file"]::file-selector-button:hover {
+  background-color: #e5e7eb;
+}
+
+.label-with-action {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #4338ca;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 0.25rem;
+}
+
+@media (max-width: 900px) {
+  .staff-details-form .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .staff-details-form .form-grid .form-group.span-2,
+  .staff-details-form .form-grid .form-group.span-3 {
+    grid-column: span 1;
+  }
+}
