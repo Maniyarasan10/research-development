@@ -3,7 +3,10 @@ import { useState, useEffect } from 'react';
 import { iprAPI, fileAPI } from '../services/api';
 import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
-import IPRForm from './IPRForm'; // Use the dedicated IPR form
+import IPRForm from './IPRForm';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
 
 const IPRPage = () => {
   const [iprList, setIprList] = useState([]);
@@ -12,14 +15,18 @@ const IPRPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [filterFromYearDate, setFilterFromYearDate] = useState(null);
+  const [filterToYearDate, setFilterToYearDate] = useState(null);
+  const [filterFromYear, setFilterFromYear] = useState('');
+  const [filterToYear, setFilterToYear] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false); // Moved this line
   const [editingIpr, setEditingIpr] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState(null);
   const [viewIpr, setViewIpr] = useState(null);
 
   useEffect(() => {
     fetchIpr();
-  }, []); // Initial fetch
+  }, [searchTerm, filterType, filterStatus, filterFromYear, filterToYear]); // Auto-fetch on filter change
 
   const fetchIpr = async () => {
     setLoading(true);
@@ -28,6 +35,10 @@ const IPRPage = () => {
         search: searchTerm,
         application_type: filterType,
         status: filterStatus,
+        from_year: filterFromYear,
+        to_year: filterToYear,
+        filterFromYearDate: filterFromYearDate,
+        filterToYearDate: filterToYearDate,
       };
       const response = await iprAPI.getAll(params);
       setIprList(response.data);
@@ -38,6 +49,14 @@ const IPRPage = () => {
     }
   };
 
+  // Helper to get the first available file attachment for display in the table
+  const getFirstAttachment = (ipr) => {
+    if (ipr.file_receipt) return ipr.file_receipt;
+    if (ipr.file_published_proof) return ipr.file_published_proof;
+    if (ipr.file_pattern_journal) return ipr.file_pattern_journal;
+    if (ipr.file_certificate) return ipr.file_certificate;
+    return null;
+  };
   const handleAdd = () => {
     setEditingIpr(null);
     setIsModalOpen(true);
@@ -91,59 +110,85 @@ const IPRPage = () => {
   }
 
   return (
-    <div className="staff-details-container">
-      <div className="page-header">
-        <h1>IPR Management</h1>
-        <div className="header-actions">
-          <button className="btn-secondary" onClick={() => setShowFilters(!showFilters)}>
-            {showFilters ? 'Hide Filters' : 'Show Filters'}
-          </button>
-          <button className="btn-secondary" onClick={handlePrint}>
-            Print
-          </button>
-          <button className="btn-primary" onClick={handleAdd}>
-            + Add IPR
-          </button>
-        </div>
-      </div>
-
-      {showFilters && (
-        <div className="filters-section">
-          <div className="search-box">
-            <input
-              type="text"
-              placeholder="Search by title, applicant..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-            />
-            <button onClick={handleSearch}>Search</button>
+    <ErrorBoundary>
+      <div className="staff-details-container">
+        <div className="page-header">
+          <h1>IPR Management</h1>
+          <div className="header-actions">
+            <button className="btn-secondary" onClick={() => setShowFilters(!showFilters)}>
+              {showFilters ? 'Hide Filters' : 'Show Filters'}
+            </button>
+            <button className="btn-secondary" onClick={handlePrint}>
+              Print
+            </button>
+            <button className="btn-primary" onClick={handleAdd}>
+              + Add IPR
+            </button>
           </div>
-          <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
-            <option value="">All Types</option>
-            <option value="patent">Patent</option>
-            <option value="design">Design</option>
-            <option value="copyright">Copyright</option>
-          </select>
-          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
-            <option value="">All Statuses</option>
-            <option value="filed">Filed</option>
-            <option value="published">Published</option>
-            <option value="granted">Granted</option>
-          </select>
-          {(searchTerm || filterType || filterStatus) && (
-            <button
-              className="btn-clear"
-              onClick={() => {
-                setSearchTerm('');
-                setFilterType('');
-                setFilterStatus('');
-                fetchIpr(); // Refetch with cleared filters
-              }}
-            >Clear Filters</button>
-          )}
         </div>
-      )}
+
+        {showFilters && (
+          <div className="filters-section">
+            <div className="search-box">
+              <input
+                type="text"
+                placeholder="Search by title, applicant..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+              />
+              <button onClick={handleSearch}>Search</button>
+            </div>
+            <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
+              <option value="">All Types</option>
+              <option value="patent">Patent</option>
+              <option value="design">Design</option>
+              <option value="copyright">Copyright</option>
+            </select>
+            <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+              <option value="">All Status</option>
+              <option value="filed">Filed</option>
+              <option value="published">Published</option>
+              <option value="granted">Granted</option>
+            </select>
+            <div className="year-filter-group">
+            <DatePicker
+              selected={filterFromYearDate}
+              onChange={(date) => {
+                setFilterFromYearDate(date);
+                setFilterFromYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+              placeholderText="From Year"
+              showYearPicker
+              yearItemNumber={9}
+            />
+                       
+          <DatePicker
+              selected={filterToYearDate}
+               onChange={(date) => {
+                setFilterToYearDate(date);
+                setFilterToYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+              placeholderText="To Year"
+              showYearPicker yearItemNumber={9} /></div>
+            {(searchTerm || filterType || filterStatus || filterFromYear || filterToYear) && (
+               <button
+                className="btn-clear"
+                onClick={() => {
+                  setSearchTerm('');
+                  setFilterType('');
+                  setFilterStatus('');
+                  setFilterFromYearDate(null);
+                  setFilterToYearDate(null);
+                  setFilterFromYear('');
+                  setFilterToYear('');
+                }}
+              >Clear Filters</button>
+            )}
+          </div>
+        )}
 
       <div className="table-container">
         {iprList.length === 0 ? (
@@ -154,6 +199,7 @@ const IPRPage = () => {
           <table className="details-table">
             <thead>
               <tr>
+                <th>S.No</th>
                 <th>Title</th>
                 <th>Application No</th>
                 <th>Applicants</th>
@@ -165,8 +211,9 @@ const IPRPage = () => {
               </tr>
             </thead>
             <tbody>
-              {iprList.map((ipr) => (
+              {iprList.map((ipr, index) => (
                 <tr key={ipr._id}>
+                  <td>{index + 1}</td>
                   <td>{ipr.title}</td>
                   <td>{ipr.application_number || 'N/A'}</td>
                   <td className="cell-list">
@@ -193,6 +240,11 @@ const IPRPage = () => {
                       <button className="btn-delete" onClick={() => setDeleteConfirm(ipr)}>
                         Delete
                       </button>
+                      {getFirstAttachment(ipr) && (
+                        <button className="btn-download" onClick={(e) => handleDownload(e, getFirstAttachment(ipr))}>
+                          Download
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -258,15 +310,15 @@ const IPRPage = () => {
             </div>
             {viewIpr.file_attachment && (
               <div className="detail-view-attachment">
-                <strong>Attachment:</strong>
-                <div className="attachment-actions">
-                  <a 
-                    href="#" 
-                    onClick={(e) => handleDownload(e, viewIpr.file_attachment)} 
-                    className="btn-download"
-                  >
-                    Download Document
-                  </a>
+              <strong>Attachments:</strong>
+              <div className="attachment-actions">
+                {viewIpr.file_receipt && <a href="#" onClick={(e) => handleDownload(e, viewIpr.file_receipt)} className="btn-download">Receipt</a>}
+                {viewIpr.file_published_proof && <a href="#" onClick={(e) => handleDownload(e, viewIpr.file_published_proof)} className="btn-download">Published Proof</a>}
+                {viewIpr.file_pattern_journal && <a href="#" onClick={(e) => handleDownload(e, viewIpr.file_pattern_journal)} className="btn-download">Pattern Journal</a>}
+                {viewIpr.file_certificate && <a href="#" onClick={(e) => handleDownload(e, viewIpr.file_certificate)} className="btn-download">Certificate</a>}
+                {!viewIpr.file_receipt && !viewIpr.file_published_proof && !viewIpr.file_pattern_journal && !viewIpr.file_certificate && (
+                  <p>No documents attached.</p>
+                )}
                   {/* The view button can also use the same logic or be removed if download is sufficient */}
                 </div>
               </div>
@@ -331,6 +383,7 @@ const IPRPage = () => {
         </table>
       </div>
     </div>
+    </ErrorBoundary>
   );
 };
 

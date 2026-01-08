@@ -3,6 +3,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { DEPARTMENTS } from '../constants';
 import { studentAPI, fileAPI } from '../services/api';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import StudentForm from './StudentForm';
@@ -38,15 +40,30 @@ const Students = () => {
   const [viewStudent, setViewStudent] = useState(null);
   const [filterEvent, setFilterEvent] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
+  const [filterFromYearDate, setFilterFromYearDate] = useState(null);
+  const [filterYear, setFilterYear] = useState('');
+  const [filterToYearDate, setFilterToYearDate] = useState(null);
+  const [filterFromYear, setFilterFromYear] = useState('');
+  const [filterToYear, setFilterToYear] = useState('');
 
   useEffect(() => {
-    fetchStudents(initialDept);
-  }, []);
+    fetchStudents();
+  }, [filterDept, filterEvent, filterStatus, filterFromYear, filterToYear, filterYear]); // eslint-disable-next-line react-hooks/exhaustive-deps
 
-  const fetchStudents = async (dept = filterDept, event = filterEvent, status = filterStatus) => {
+  const fetchStudents = async () => {
     try {
       setLoading(true);
-      const response = await studentAPI.getAll({ department: dept, event_name: event, status: status });
+      const params = {
+        department: filterDept,
+        event_name: filterEvent,
+        status: filterStatus,
+        from_year: filterFromYear,
+        to_year: filterToYear,
+        year: filterYear,
+         filterFromYearDate: filterFromYearDate,
+        filterToYearDate: filterToYearDate,
+      };
+      const response = await studentAPI.getAll(params);
       setStudents(response.data);
     } catch (error) {
       console.error('Error fetching students:', error);
@@ -78,7 +95,7 @@ const Students = () => {
 
   const handleFormSuccess = () => {
     setIsModalOpen(false);
-    fetchStudents(filterDept, filterEvent, filterStatus);
+    fetchStudents();
   };
 
   const handlePrint = () => {
@@ -121,10 +138,7 @@ const Students = () => {
 
       {showFilters && (
         <div className="filters-section">
-          <select value={filterDept} onChange={(e) => {
-            setFilterDept(e.target.value);
-            fetchStudents(e.target.value, filterEvent, filterStatus);
-          }}>
+          <select value={filterDept} onChange={(e) => setFilterDept(e.target.value)}>
             <option value="">All Departments</option>
             {DEPARTMENTS.map((dept) => (
               <option key={dept.value} value={dept.value}>
@@ -133,34 +147,65 @@ const Students = () => {
             ))}
           </select>
 
-          <select value={filterEvent} onChange={(e) => {
-            setFilterEvent(e.target.value);
-            fetchStudents(filterDept, e.target.value, filterStatus);
-          }}>
+          <select value={filterEvent} onChange={(e) => setFilterEvent(e.target.value)}>
             <option value="">All Events</option>
             {EVENT_NAMES.map((event) => (
               <option key={event} value={event}>{event}</option>
             ))}
           </select>
 
-          <select value={filterStatus} onChange={(e) => {
-            setFilterStatus(e.target.value);
-            fetchStudents(filterDept, filterEvent, e.target.value);
-          }}>
-            <option value="">All Statuses</option>
+          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+            <option value="">All Status</option>
             <option value="Participated">Participated</option>
             <option value="Won">Won</option>
             <option value="Consolation Prize">Consolation Prize</option>
           </select>
 
-          {(filterDept || filterEvent || filterStatus) && (
+          <select value={filterYear} onChange={(e) => setFilterYear(e.target.value)}>
+            <option value="">All Years</option>
+            <option value="I Year">I Year</option>
+            <option value="II Year">II Year</option>
+            <option value="III Year">III Year</option>
+            <option value="IV Year">IV Year</option>
+          </select>
+
+          <div className="year-filter-group">
+            <DatePicker
+              selected={filterFromYearDate}
+              onChange={(date) => {
+                setFilterFromYearDate(date);
+                setFilterFromYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+              placeholderText="From Year"
+              showYearPicker
+              yearItemNumber={9}
+            />
+            <DatePicker
+              selected={filterToYearDate}
+              onChange={(date) => {
+                setFilterToYearDate(date);
+                setFilterToYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+              placeholderText="To Year"
+              showYearPicker
+              yearItemNumber={9}
+            />
+          </div>
+
+          {(filterDept || filterEvent || filterStatus || filterFromYear || filterToYear || filterYear) && (
             <button
               className="btn-clear"
               onClick={() => {
                 setFilterDept('');
                 setFilterEvent('');
                 setFilterStatus('');
-                fetchStudents('', '', '');
+                setFilterFromYear('');
+                setFilterToYear('');
+                setFilterFromYearDate(null);
+                setFilterToYearDate(null);
+                setFilterYear('');
               }}
             >
               Clear Filters
@@ -178,27 +223,38 @@ const Students = () => {
           <table className="students-table">
             <thead>
               <tr>
+                <th>S.No</th>
                 <th>Student Name</th>
                 <th>Event Name</th>
                 <th>College</th>
                 <th>Department</th>
+                <th>Year</th>
                 <th>Status</th>
+                <th>Event Date(s)</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {students.map((student) => (
+              {students.map((student, index) => (
                 <tr key={student._id}>
+                  <td>{index + 1}</td>
                   <td>{student.name}</td>
                   <td>{student.event_name}</td>
                   <td>{student.college_name}</td>
                   <td>{student.department}</td>
+                  <td>{student.year}</td>
                   <td>{student.status}</td>
+                  <td>{student.dates?.map(formatDate).join(', ') || 'N/A'}</td>
                   <td>
                     <div className="student-actions">
                       <button className="btn-view" onClick={() => setViewStudent(student)}>View</button>
                       <button className="btn-edit" onClick={() => handleEdit(student)}>Edit</button>
                       <button className="btn-delete" onClick={() => setDeleteConfirm(student)}>Delete</button>
+                      {student.file_attachment && (
+                        <button className="btn-download" onClick={(e) => handleDownload(e, student.file_attachment)}>
+                          Download
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -252,24 +308,6 @@ const Students = () => {
               </tbody>
             </table>
 
-            {viewStudent.file_attachment && (
-              <div className="detail-view-attachment">
-                <strong>Attachment:</strong>
-                <div className="attachment-actions">
-                  <a 
-                    href="#" 
-                    onClick={(e) => handleDownload(e, viewStudent.file_attachment)} 
-                    className="btn-view"
-                  >
-                    View Document
-                  </a>
-                  <a 
-                    href="#" 
-                    onClick={(e) => handleDownload(e, viewStudent.file_attachment)} 
-                    className="btn-download">Download Document</a>
-                </div>
-              </div>
-            )}
             <div className="detail-meta" style={{ borderTop: '1px solid #e5e7eb', paddingTop: '1rem', marginTop: '1rem' }}>
               <span>Created by: {viewStudent.created_by}</span>
               <span>Created on: {formatDate(viewStudent.created_at)}</span>
@@ -291,6 +329,13 @@ const Students = () => {
         <div className="print-header">
           <img src="/logo.png" alt="College Logo" style={{ maxHeight: '50px', marginBottom: '1rem' }} />
           <h2>Student Achievements Report</h2>
+          {(filterFromYear || filterToYear) && (
+            <p className="print-filter-info">
+              <strong>Year Range:</strong>
+              {filterFromYear && ` From ${filterFromYear}`}
+              {filterToYear && ` To ${filterToYear}`}
+            </p>
+          )}
         </div>
         <table className="print-table">
           <thead>
@@ -320,7 +365,7 @@ const Students = () => {
                 <td>{student.status || 'N/A'}</td>
                 <td>{student.prize_details || 'N/A'}</td>
                 <td>{student.dates?.map(formatDate).join(', ') || 'N/A'}</td>
-              </tr>
+             </tr>
             ))}
           </tbody>
         </table>

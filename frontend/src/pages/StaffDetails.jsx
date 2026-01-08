@@ -6,6 +6,8 @@ import Modal from '../components/Modal';
 import ConfirmDialog from '../components/ConfirmDialog';
 import StaffDetailsForm from './StaffDetailsForm';
 import './StaffDetails.css';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 
 const CATEGORIES = [
   { value: 'journal_publication', label: 'Journal Publication', icon: '🔬' },
@@ -14,6 +16,9 @@ const CATEGORIES = [
   { value: 'book_chapters', label: 'Book Chapters', icon: '📖' },
   { value: 'consultancy_project', label: 'Consultancy Project', icon: '💼' },
   { value: 'awards_researches', label: 'Awards & Researches', icon: '🏆' },
+  { value: 'research_funding_project', label: 'Research Funding Project', icon: '💰' },
+  { value: 'certification', label: 'Certification', icon: '📜' },
+  { value: 'seminar_workshop_fdp', label: 'Seminar/Workshop/FDP', icon: '🧑‍🏫' },
 ];
 
 const TABLE_CONFIG = {
@@ -50,7 +55,7 @@ const TABLE_CONFIG = {
   book_chapters: {
     columns: [
       { header: 'Chapter Title', accessor: 'title', wrap: true },
-      { header: 'Book Title and Publisher', accessor: 'book_title', wrap: true },
+      { header: 'Book Title', accessor: 'book_title', wrap: true },
       { header: 'Publisher', accessor: 'publisher' },
       { header: 'Authors', accessor: 'authors', wrap: true },
       { header: 'Year', accessor: 'publication_year' },
@@ -70,8 +75,35 @@ const TABLE_CONFIG = {
   awards_researches: {
     columns: [
       { header: 'Award/Research Name', accessor: 'title', wrap: true },
+      { header: 'Faculty Name', accessor: 'faculty_name', wrap: true }, // Moved this line
       { header: 'Awarding Body', accessor: 'awarding_body', wrap: true },
       { header: 'Year', accessor: 'publication_year' },
+    ],
+  },
+  research_funding_project: {
+    columns: [
+      { header: 'Project Title', accessor: 'title', wrap: true },
+      { header: 'Funding Agency', accessor: 'funding_agency', wrap: true },
+      { header: 'Amount (INR)', accessor: 'amount' },
+      { header: 'Duration', accessor: 'duration' },
+      { header: 'Status', accessor: 'status' },
+    ],
+  },
+  certification: {
+    columns: [
+      { header: 'Certification Name', accessor: 'title', wrap: true },
+      { header: 'Issuing Organization', accessor: 'issuing_organization', wrap: true },
+      { header: 'Date Obtained', accessor: 'date_obtained', isDate: true },
+      { header: 'Credential ID', accessor: 'credential_id' },
+    ],
+  },
+  seminar_workshop_fdp: {
+    columns: [
+      { header: 'Program Title', accessor: 'title', wrap: true },
+      { header: 'Type', accessor: 'program_type' },
+      { header: 'Organizer', accessor: 'organizer', wrap: true },
+      { header: 'Start Date', accessor: 'start_date', isDate: true },
+      { header: 'End Date', accessor: 'end_date', isDate: true },
     ],
   },
 };
@@ -81,6 +113,10 @@ const StaffDetails = () => {
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [filterFromYearDate, setFilterFromYearDate] = useState(null);
+  const [filterToYearDate, setFilterToYearDate] = useState(null);
+  const [filterFromYear, setFilterFromYear] = useState('');
+  const [filterToYear, setFilterToYear] = useState('');
   const [showFilters, setShowFilters] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingDetail, setEditingDetail] = useState(null);
@@ -92,7 +128,7 @@ const StaffDetails = () => {
     if (selectedCategory) {
       fetchDetails();
     }
-  }, [selectedCategory, searchTerm]);
+  }, [selectedCategory, searchTerm, filterFromYear, filterToYear, filterFromYearDate, filterToYearDate]); // eslint-disable-next-line react-hooks/exhaustive-deps
 
   // Effect to manage the navbar action button
   useEffect(() => {
@@ -118,6 +154,10 @@ const StaffDetails = () => {
       const params = {
         category: selectedCategory,
         search: searchTerm,
+        from_year: filterFromYear,
+        filterFromYearDate: filterFromYearDate,
+        filterToYearDate: filterToYearDate,
+        to_year: filterToYear,
       };
       const response = await staffDetailsAPI.getAll(params);
       setDetails(response.data);
@@ -227,8 +267,38 @@ const StaffDetails = () => {
               />
               <button onClick={handleSearch}>Search</button>
             </div>
-            {searchTerm && (
-              <button className="btn-clear" onClick={() => setSearchTerm('')}>Clear Search</button>
+            <div className="year-filter-group">
+            <DatePicker
+              selected={filterFromYearDate}
+              onChange={(date) => {
+                setFilterFromYearDate(date);
+                setFilterFromYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+              placeholderText="From Year"
+              showYearPicker
+              yearItemNumber={9}
+            />
+            <DatePicker
+              selected={filterToYearDate}
+              onChange={(date) => {
+                setFilterToYearDate(date);
+                setFilterToYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+              placeholderText="To Year"
+              showYearPicker
+              yearItemNumber={9}
+            />
+            </div>
+            {(searchTerm || filterFromYear || filterToYear) && (
+              <button className="btn-clear" onClick={() => {
+                setSearchTerm('');
+                setFilterFromYear('');
+                setFilterToYear('');
+              }}>
+                Clear Filters
+              </button>
             )}
           </div>
         )}
@@ -240,33 +310,48 @@ const StaffDetails = () => {
             <table className="details-table">
               <thead>
                 <tr>
+                  <th>S.No</th>
                   {categoryConfig.columns.map(col => <th key={col.accessor}>{col.header}</th>)}
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {details.map(detail => (
+                {details.map((detail, index) => (
                   <tr key={detail._id}>
-                    {categoryConfig.columns.map(col => (
+                    <td>{index + 1}</td>
+                    {categoryConfig.columns.map((col) => (
                       <td key={col.accessor} className={col.wrap ? 'cell-wrap' : ''}>
-                        {col.accessor === 'authors' && typeof detail.authors === 'string' ? (
-                          detail.authors.split(',').map((author, index) => (
-                            <div key={index} className="author-item">
+                        {col.accessor === 'authors' && Array.isArray(detail.authors) ? (
+                          // Render array of authors for book chapters
+                          detail.authors.map((author, authorIndex) => (
+                            <div key={authorIndex} className="author-item">
+                              {author.name}
+                            </div>
+                          ))
+                        ) : col.accessor === 'authors' && typeof detail.authors === 'string' ? (
+                          // Render comma-separated string for other categories (e.g., books_published)
+                          detail.authors.split(',').map((author, authorIndex) => (
+                            <div key={authorIndex} className="author-item">
                               {author.trim()}
                             </div>
                           ))
                         ) : (
                           col.isDate ? formatDate(detail[col.accessor]) : (detail[col.accessor] || 'N/A')
-                        )}
+                      )}
                       </td>
                     ))}
                     <td>
                       <div className="detail-actions">
                         <button className="btn-view" onClick={() => setViewingDetail(detail)}>
-                          View
+                          View 
                         </button>
                         <button className="btn-edit" onClick={() => handleEdit(detail)}>Edit</button>
                         <button className="btn-delete" onClick={() => setDeleteConfirm(detail)}>Delete</button>
+                        {detail.file_attachment && (
+                          <button className="btn-download" onClick={(e) => handleDownload(e, detail.file_attachment)}>
+                            Download
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -286,21 +371,30 @@ const StaffDetails = () => {
           <table className="print-table">
             <thead>
               <tr>
+                <th>S.No</th>
                 {categoryConfig.columns.map(col => <th key={`print-h-${col.accessor}`}>{col.header}</th>)}
               </tr>
 
             </thead>
             <tbody>
               {details.map((detail, index) => (
-                <tr key={`print-r-${detail._id}`}>
+                <tr key={`print-r-${detail._id}`}><td>{index + 1}</td>
                   {categoryConfig.columns.map(col => (
                     <td key={`print-c-${col.accessor}`}>
-                      {col.accessor === 'authors' && typeof detail.authors === 'string' ? (
+                      {col.accessor === 'authors' && Array.isArray(detail.authors) ? (
+                        // Render array of authors for book chapters in print
+                        detail.authors.map((author, authorIndex) => (
+                          <div key={authorIndex}>{author.name}</div>
+                        ))
+                      ) : col.accessor === 'authors' && typeof detail.authors === 'string' ? (
+                        // Render comma-separated string for other categories in print
                         detail.authors.split(',').map((author, authorIndex) => (
                           <div key={authorIndex}>{author.trim()}</div>
                         ))
+                      ) : col.isDate ? (
+                        formatDate(detail[col.accessor])
                       ) : (
-                        col.isDate ? formatDate(detail[col.accessor]) : (detail[col.accessor] || 'N/A')
+                        (detail[col.accessor] || 'N/A')
                       )}
                     </td>
                   ))}

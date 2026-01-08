@@ -5,6 +5,11 @@
   box-sizing: border-box;
 }
 
+html, body, #root { /* Assuming #root is your main app mount point */
+  height: 100%;
+  overflow: hidden; /* Prevent global scrolling */
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
     'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
@@ -24,7 +29,7 @@ body {
 }
 
 .app-layout {
-  min-height: 100vh;
+  height: 100%; /* Take full height of parent (body) */
   display: flex;
   flex-direction: column;
 }
@@ -32,6 +37,7 @@ body {
 .app-container {
   display: flex;
   flex: 1;
+  overflow: hidden; /* Prevent app-container from scrolling */
 }
 
 .app-content {

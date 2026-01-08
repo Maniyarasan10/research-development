@@ -49,11 +49,6 @@ ipr_collection = db['ipr']
 
 # Create indexes for better performance
 users_collection.create_index('username', unique=True)
-students_collection.create_index([('department', 1), ('year', 1)])
-staff_details_collection.create_index([('category', 1), ('department', 1), ('publication_year', -1)])
-ipr_collection.create_index([('application_type', 1), ('status', 1), ('filed_date', -1)])
-
-
 
 # Drop the obsolete unique index on student_id if it exists
 try:

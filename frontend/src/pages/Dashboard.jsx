@@ -1,13 +1,17 @@
-import { useState, useEffect } from 'react';
-import { dashboardAPI } from '../services/api';
+import { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
+import { staffDetailsAPI, studentAPI, iprAPI } from '../services/api';
 import './Dashboard.css';
 
-const StatCard = ({ title, value, icon, color }) => (
+const StatCard = ({ title, value, icon, color, to }) => (
   <div className={`stat-card ${color}`}>
     <div className="stat-icon">{icon}</div>
     <div className="stat-content">
+
       <h3>{title}</h3>
       <p className="stat-number">{value}</p>
     </div>
@@ -36,107 +40,184 @@ const DepartmentStats = ({ departments }) => {
   );
 };
 
+const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#AF19FF', '#FF4560', '#775DD0', '#546E7A', '#26a69a'];
+
+const CATEGORY_LABELS = {
+  journal_publication: 'Journal Publication',
+  conference_presentation: 'Conference Presentation',
+  books_published: 'Books Published',
+  book_chapters: 'Book Chapters',
+  consultancy_project: 'Consultancy Project',
+  awards_researches: 'Awards & Researches',
+  research_funding_project: 'Research Funding',
+  certification: 'Certification',
+  seminar_workshop_fdp: 'Seminar/Workshop/FDP',
+};
+
 const Dashboard = () => {
-  const [stats, setStats] = useState(null);
+  const [staffStats, setStaffStats] = useState([]);
+  const [studentStats, setStudentStats] = useState([]);
+  const [iprCount, setIprCount] = useState(0);
+  const [totalStudents, setTotalStudents] = useState(0); // Moved this line
+  const [filterFromYearDate, setFilterFromYearDate] = useState(null);
+  const [filterToYearDate, setFilterToYearDate] = useState(null);
+  const [filterFromYear, setFilterFromYear] = useState('');
+  const [filterToYear, setFilterToYear] = useState('');
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const { user } = useAuth();
 
   useEffect(() => {
-    const fetchStats = async () => {
+    const fetchData = async () => {
       try {
         setLoading(true);
-        setError(null);
-        const response = await dashboardAPI.getStats();
-        setStats(response.data);
-      } catch (err) {
-        setError(err.response?.data?.message || 'Failed to fetch dashboard stats');
-        console.error('Error fetching dashboard stats:', err);
+        const params = {
+          from_year: filterFromYear,
+           filterFromYearDate: filterFromYearDate,
+        filterToYearDate: filterToYearDate,
+          to_year: filterToYear,
+        }
+
+        const [staffResponse, studentResponse, iprResponse] = await Promise.all([
+          staffDetailsAPI.getAll(params),
+          studentAPI.getAll(params),
+          iprAPI.getAll(params),
+        ]);
+
+        // Process staff data for pie chart
+        const currentYear = new Date().getFullYear();
+        const staffCounts = staffResponse.data.reduce((acc, item) => {
+          const itemYear = parseInt(item.publication_year, 10);
+          if (filterFromYear && itemYear < parseInt(filterFromYear, 10)) return acc;
+          if (filterToYear && itemYear > parseInt(filterToYear, 10)) return acc;
+          const categoryLabel = CATEGORY_LABELS[item.category] || item.category;
+          acc[categoryLabel] = (acc[categoryLabel] || 0) + 1;
+          return acc;
+        }, {});
+        setStaffStats(Object.entries(staffCounts).map(([name, value]) => ({ name, value })));
+
+        // Process student data for pie chart
+        // Process student data for pie chart
+        const studentCounts = studentResponse.data.reduce((acc, item) => {
+          const itemYear = parseInt(item.year.match(/\d+/)?.[0], 10); // Extract year number from "I Year", "II Year"
+          if (filterFromYear && itemYear < parseInt(filterFromYear, 10)) return acc;
+          if (filterToYear && itemYear > parseInt(filterToYear, 10)) return acc;
+          acc[item.department] = (acc[item.department] || 0) + 1;
+          return acc;
+        }, {});
+        setStudentStats(Object.entries(studentCounts).map(([name, value]) => ({ name, value })));
+        setTotalStudents(studentResponse.data.filter(item => {
+          const itemYear = parseInt(item.year.match(/\d+/)?.[0], 10);
+          if (filterFromYear && itemYear < parseInt(filterFromYear, 10)) return false;
+          if (filterToYear && itemYear > parseInt(filterToYear, 10)) return false;
+          return true;
+        }).length);
+
+        // Process IPR data for count
+        const iprCounts = iprResponse.data.reduce((acc, item) => {
+          const filedYear = parseInt(String(item.filed_date)?.split('-')[0], 10);
+          if (filterFromYear && filedYear < parseInt(filterFromYear, 10)) return acc;
+          if (filterToYear && filedYear > parseInt(filterToYear, 10)) return acc;
+          return acc + 1;
+        }, 0);
+        setIprCount(iprCounts);
+
+      } catch (error) {
+        console.error("Error fetching dashboard data:", error);
       } finally {
         setLoading(false);
       }
     };
 
-    if (user) {
-      fetchStats();
-    }
-  }, [user]);
+    fetchData();
+  }, [user, filterFromYear, filterToYear]);
 
-  const renderAdminDashboard = () => (
-    <>
-      <div className="dashboard-cards">
-        {stats.total_students !== undefined && (
-          <StatCard title="Total Student Details" value={stats.total_students} icon="🎓" color="blue" />
-        )}
-        {stats.total_rd_entries !== undefined && (
-          <StatCard title="R&D Entries" value={stats.total_rd_entries} icon="🔬" color="purple" />
-        )}
-        {stats.total_ipr_entries !== undefined && (
-          <StatCard title="IPR Entries" value={stats.total_ipr_entries} icon="⚖️" color="orange" />
-        )}
-        {stats.total_staff !== undefined && (
-          <StatCard title="Total Staff" value={stats.total_staff} icon="👥" color="green" />
-        )}
-      </div>
-      {stats.students_by_department && (
-        <DepartmentStats departments={stats.students_by_department} />
-      )}
-    </>
-  );
-
-  const renderRdStaffDashboard = () => (
-    <div className="dashboard-cards">
-      {stats.my_rd_entries !== undefined && (
-        <StatCard title="My R&D Entries" value={stats.my_rd_entries} icon="🔬" color="purple" />
-      )}
-      {stats.department_students !== undefined && (
-        <StatCard title="Students in My Dept." value={stats.department_students} icon="🎓" color="blue" />
-      )}
-    </div>
-  );
-
-  const renderIprStaffDashboard = () => (
-    <div className="dashboard-cards">
-      {stats.my_ipr_entries !== undefined && (
-        <StatCard title="My IPR Entries" value={stats.my_ipr_entries} icon="⚖️" color="orange" />
-      )}
-    </div>
-  );
-
-  const renderDashboardContent = () => {
-    if (loading) {
-      return <div className="loading">Loading dashboard...</div>;
-    }
-
-    if (error) {
-      return <div className="error-message">{error}</div>;
-    }
-
-    if (!stats || Object.keys(stats).length === 0) {
-      return <div className="empty-state"><p>No dashboard information available for your role.</p></div>;
-    }
-
-    if (user.role === 'admin') {
-      return renderAdminDashboard();
-    }
-    if (user.role === 'staff' && user.management_group === 'rd') {
-      return renderRdStaffDashboard();
-    }
-    if (user.role === 'staff' && user.management_group === 'ipr') {
-      return renderIprStaffDashboard();
-    }
-
-    return <div className="empty-state"><p>Welcome to the dashboard.</p></div>;
-  };
+  if (loading) {
+    return <div className="loading">Loading Dashboard...</div>;
+  }
 
   return (
     <div className="dashboard-container">
       <div className="dashboard-header">
         <h1>Dashboard</h1>
-        <p>Welcome back, {user?.name || 'User'}! Here's your overview.</p>
+        <div className="dashboard-filters year-filter-group">
+        <DatePicker
+              selected={filterFromYearDate}
+              onChange={(date) => {
+                setFilterFromYearDate(date);
+                setFilterFromYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+            placeholderText="From Year"
+              showYearPicker
+              yearItemNumber={9}
+            />
+            <DatePicker
+              selected={filterToYearDate}
+               onChange={(date) => {
+                setFilterToYearDate(date);
+                setFilterToYear(date ? date.getFullYear() : '');
+              }}
+              dateFormat="yyyy"
+            className="filter-select"
+              placeholderText="To Year" showYearPicker yearItemNumber={9} />
+          {(filterFromYear || filterToYear) && (
+            <button className="btn-clear-filter" onClick={() => {
+              setFilterFromYear('');
+              setFilterToYear('');
+            }}>Clear Filter</button>
+          )}
+        </div>
       </div>
-      <div className="dashboard-content">
-        {renderDashboardContent()}
+      <div className="stat-cards-grid">
+        <div className="chart-card stat-card-blue">
+          <h2><Link to="/staff-details">Faculty Details</Link></h2>
+          <p>View and manage faculty R&D activities.</p>
+          <p>Total Entries: {staffStats.reduce((sum, entry) => sum + entry.value, 0)}</p>
+        </div>
+
+        <div className="chart-card stat-card-green">
+
+          <h2><Link to="/students">Student Details</Link></h2>
+
+          <p>Manage student achievements and participation.</p>
+          <p>Total Achievements: {totalStudents}</p>
+        </div>
+
+        <div className="chart-card stat-card-orange">
+          <h2><Link to="/ipr">IPR Details</Link></h2>
+          <p>Manage Intellectual Property Rights.</p>
+          <p>Total IPR Entries: {iprCount}</p>
+        </div>
+      </div>
+      <div className="charts-grid">
+        <div className="chart-card">
+          <h2>Faculty R&D Activities by Category</h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie data={staffStats} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} fill="#8884d8" label>
+                {staffStats.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="chart-card">
+          <h2>Student Achievements by Department</h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie data={studentStats} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={100} fill="#82ca9d" label>
+                {studentStats.map((entry, index) => (
+                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                ))}
+              </Pie>
+              <Tooltip />
+              <Legend />
+            </PieChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );
